@@ -1,0 +1,333 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <title>Seasonal Showdown - Smartboard Edition</title>
+    <style>
+        :root {
+            --p1: #ff4757; --p2: #2ed573; --p3: #1e90ff; --p4: #ffa502;
+            --bg: #2f3542; --panel: #3f4452;
+        }
+        body, html { 
+            margin: 0; padding: 0; width: 100%; height: 100%; 
+            font-family: 'Arial Black', sans-serif; background: var(--bg); color: white;
+            overflow: hidden; user-select: none;
+        }
+
+        /* Top Control Bar */
+        #control-bar {
+            position: fixed; top: 0; left: 0; width: 100%; height: 60px;
+            background: #1e222d; display: flex; align-items: center; justify-content: center;
+            gap: 20px; z-index: 1000; border-bottom: 2px solid #57606f;
+        }
+
+        #game-wrapper {
+            display: grid; width: 100vw; height: calc(100vh - 60px);
+            margin-top: 60px; grid-template-columns: 1fr 1fr; grid-template-rows: 1fr 1fr;
+            gap: 15px; padding: 15px; box-sizing: border-box;
+        }
+        .player-section {
+            background: var(--panel); border: 8px solid white;
+            display: flex; flex-direction: column; align-items: center;
+            justify-content: center; position: relative; border-radius: 20px;
+        }
+        .frozen { filter: grayscale(1) blur(8px); pointer-events: none; opacity: 0.4; }
+
+        /* UI Overlays */
+        #overlay {
+            position: fixed; top: 0; left: 0; width: 100%; height: 100%;
+            background: rgba(0,0,0,0.95); z-index: 2000;
+            display: flex; flex-direction: column; align-items: center; justify-content: center;
+            text-align: center;
+        }
+        .btn {
+            padding: 20px 40px; font-size: 24px; cursor: pointer;
+            background: #2ed573; color: white; border: none; border-radius: 10px;
+            margin: 10px; font-family: inherit; box-shadow: 0 4px #26ae60;
+        }
+        .btn:active { transform: translateY(2px); box-shadow: none; }
+        .btn-resume { background: #1e90ff; box-shadow: 0 4px #0984e3; }
+        .btn-end { background: #ff4757; box-shadow: 0 4px #c0392b; padding: 10px 20px; font-size: 16px; }
+        .btn-pause { background: #ffa502; box-shadow: 0 4px #d35400; padding: 10px 20px; font-size: 16px; }
+
+        /* Game Elements */
+        .score-box { position: absolute; top: 15px; right: 20px; font-size: 28px; background: rgba(0,0,0,0.3); padding: 5px 15px; border-radius: 10px; }
+        .word-display { font-size: 4rem; margin-bottom: 25px; text-shadow: 3px 3px 0px rgba(0,0,0,0.5); }
+        .options-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 15px; width: 85%; }
+        .choice-btn { 
+            padding: 20px; font-size: 1.8rem; background: white; color: black; 
+            border-radius: 12px; border: none; cursor: pointer; font-weight: bold;
+        }
+        .timer-main { font-size: 32px; font-weight: bold; color: #fffa65; }
+        
+        #p0 { border-color: var(--p1); } #p1 { border-color: var(--p2); }
+        #p2 { border-color: var(--p3); } #p3 { border-color: var(--p4); }
+    </style>
+</head>
+<body>
+
+    <div id="control-bar">
+        <button id="pause-btn" class="btn-pause" onclick="togglePause()">PAUSE GAME</button>
+        <div class="timer-main" id="timer-display">TIME: 00</div>
+        <button class="btn-end" onclick="forceEndRound()">END ROUND NOW</button>
+    </div>
+
+    <div id="overlay">
+        <h1 id="status-title">SEASONAL SHOWDOWN</h1>
+        <div id="setup-area">
+            <p>Select number of players:</p>
+            <button class="btn" onclick="initGame(2)">2 PLAYERS</button>
+            <button class="btn" onclick="initGame(4)">4 PLAYERS</button>
+        </div>
+        
+        <div id="pause-menu" style="display:none">
+            <button class="btn btn-resume" onclick="togglePause()">RESUME GAME</button>
+        </div>
+
+        <div id="round-intro" style="display:none">
+            <h2 id="round-num-text"></h2>
+            <p id="round-desc" style="font-size: 24px; color: #7bed9f;"></p>
+            <div id="example-box" style="background: #57606f; padding: 20px; border-radius: 15px; margin: 20px; font-size: 22px;"></div>
+            <button class="btn" onclick="startCountdown()">I'M READY!</button>
+        </div>
+        <div id="summary-area" style="display:none"></div>
+    </div>
+
+    <div id="game-wrapper"></div>
+
+<script>
+    const vocab = [
+        {word: "summer", icon: "☀️", missing: "S_MM_R"},
+        {word: "spring", icon: "🌱", missing: "SP_I_G"},
+        {word: "winter", icon: "❄️", missing: "W_NT_R"},
+        {word: "autumn", icon: "🍂", missing: "AU_U_N"},
+        {word: "cool", icon: "😎", missing: "C_OL"},
+        {word: "cold", icon: "🥶", missing: "C_LD"},
+        {word: "hot", icon: "🔥", missing: "H_T"},
+        {word: "warm", icon: "🌤️", missing: "W_RM"}
+    ];
+
+    let gameState = {
+        players: [],
+        currentRound: 0,
+        timer: 0,
+        isActive: false,
+        isPaused: false,
+        playerCount: 2,
+        timerInterval: null
+    };
+
+    const rounds = [
+        { name: "Round 1", desc: "Match Word to Picture", time: 90, type: "match", powerups: false },
+        { name: "Round 2", desc: "Unscramble Letters! (Freeze Active)", time: 90, type: "scramble", powerups: "freeze" },
+        { name: "Round 3", desc: "Find Words! (2x Points + Freeze)", time: 60, type: "find", powerups: "all" },
+        { name: "Round 4", desc: "Missing Letters! (5 Pts + All Powers)", time: 60, type: "missing", powerups: "all" }
+    ];
+
+    const audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+    function playSound(freq, type, duration) {
+        const osc = audioCtx.createOscillator();
+        const gain = audioCtx.createGain();
+        osc.type = type;
+        osc.frequency.setValueAtTime(freq, audioCtx.currentTime);
+        gain.gain.exponentialRampToValueAtTime(0.0001, audioCtx.currentTime + duration);
+        osc.connect(gain); gain.connect(audioCtx.destination);
+        osc.start(); osc.stop(audioCtx.currentTime + duration);
+    }
+
+    function initGame(num) {
+        gameState.playerCount = num;
+        gameState.players = Array.from({length: num}, () => ({ totalScore: 0, currentRoundScore: 0, frozen: false }));
+        document.getElementById('setup-area').style.display = 'none';
+        showRoundIntro();
+    }
+
+    function showRoundIntro() {
+        if (gameState.currentRound >= rounds.length) return showFinalWinner();
+        
+        const r = rounds[gameState.currentRound];
+        document.getElementById('overlay').style.display = 'flex';
+        document.getElementById('round-intro').style.display = 'block';
+        document.getElementById('summary-area').style.display = 'none';
+        document.getElementById('pause-menu').style.display = 'none';
+        document.getElementById('status-title').innerText = r.name;
+        document.getElementById('round-desc').innerText = r.desc;
+        
+        let ex = "";
+        if(r.type === 'match') ex = "Match: ☀️ → SUMMER";
+        if(r.type === 'scramble') ex = "Unscramble: RTWINE → WINTER";
+        if(r.type === 'find') ex = "Click the target word! (2x Points)";
+        if(r.type === 'missing') ex = "Fill: S_MM_R → SUMMER (5 Points)";
+        document.getElementById('example-box').innerHTML = "<strong>HOW TO PLAY:</strong><br>" + ex;
+    }
+
+    async function startCountdown() {
+        document.getElementById('round-intro').style.display = 'none';
+        for(let i=3; i>0; i--) {
+            document.getElementById('status-title').innerText = i;
+            playSound(400, 'triangle', 0.2);
+            await new Promise(r => setTimeout(r, 1000));
+        }
+        document.getElementById('overlay').style.display = 'none';
+        startRound();
+    }
+
+    function startRound() {
+        const r = rounds[gameState.currentRound];
+        gameState.timer = r.time;
+        gameState.isActive = true;
+        
+        const container = document.getElementById('game-wrapper');
+        container.innerHTML = '';
+        container.style.gridTemplateColumns = '1fr 1fr';
+        container.style.gridTemplateRows = gameState.playerCount > 2 ? '1fr 1fr' : '1fr';
+
+        gameState.players.forEach((p, i) => {
+            p.currentRoundScore = 0;
+            const div = document.createElement('div');
+            div.className = 'player-section';
+            div.id = `p${i}`;
+            div.innerHTML = `<div class="score-box">P${i+1}: <span id="scoreVal${i}">0</span></div><div id="content${i}"></div>`;
+            container.appendChild(div);
+            generateTask(i);
+        });
+
+        clearInterval(gameState.timerInterval);
+        gameState.timerInterval = setInterval(() => {
+            if(gameState.isPaused) return;
+            gameState.timer--;
+            document.getElementById('timer-display').innerText = "TIME: " + gameState.timer;
+            if(gameState.timer <= 0) endRound();
+        }, 1000);
+    }
+
+    function generateTask(pIdx) {
+        const r = rounds[gameState.currentRound];
+        const display = document.getElementById(`content${pIdx}`);
+        const target = vocab[Math.floor(Math.random() * vocab.length)];
+        
+        let question = "";
+        if(r.type === 'match') question = target.icon;
+        else if(r.type === 'scramble') question = target.word.split('').sort(() => 0.5-Math.random()).join('');
+        else if(r.type === 'find') question = `FIND: ${target.word.toUpperCase()}`;
+        else if(r.type === 'missing') question = target.missing;
+
+        let html = `<div class="word-display">${question}</div><div class="options-grid">`;
+        const choices = [...vocab].sort(() => 0.5-Math.random());
+        choices.forEach(v => {
+            html += `<button class="choice-btn" onclick="checkAnswer(${pIdx}, '${v.word}', '${target.word}')">${v.word.toUpperCase()}</button>`;
+        });
+        display.innerHTML = html + `</div>`;
+    }
+
+    function checkAnswer(pIdx, choice, correct) {
+        if(gameState.players[pIdx].frozen || !gameState.isActive || gameState.isPaused) return;
+
+        if(choice === correct) {
+            playSound(600, 'sine', 0.2);
+            let points = (rounds[gameState.currentRound].type === 'missing') ? 5 : 1;
+            if(rounds[gameState.currentRound].type === 'find') points = 2;
+            
+            const powerType = rounds[gameState.currentRound].powerups;
+            if(powerType) {
+                if(Math.random() > 0.8) { 
+                    playSound(1000, 'square', 0.1);
+                    if(powerType === 'freeze' || (powerType === 'all' && Math.random() > 0.5)) {
+                        freezeOthers(pIdx);
+                    } else if (powerType === 'all') {
+                        points *= (Math.random() > 0.5 ? 2 : 3);
+                    }
+                }
+            }
+
+            gameState.players[pIdx].currentRoundScore += points;
+            document.getElementById(`scoreVal${pIdx}`).innerText = gameState.players[pIdx].currentRoundScore;
+            generateTask(pIdx);
+        } else {
+            playSound(150, 'sawtooth', 0.3);
+        }
+    }
+
+    function freezeOthers(safeIdx) {
+        gameState.players.forEach((p, i) => {
+            if(i !== safeIdx) {
+                p.frozen = true;
+                const el = document.getElementById(`p${i}`);
+                if(el) el.classList.add('frozen');
+                setTimeout(() => {
+                    p.frozen = false;
+                    if(el) el.classList.remove('frozen');
+                }, 3000);
+            }
+        });
+    }
+
+    function togglePause() {
+        if(!gameState.isActive) return;
+        gameState.isPaused = !gameState.isPaused;
+        
+        const overlay = document.getElementById('overlay');
+        const pauseMenu = document.getElementById('pause-menu');
+        const title = document.getElementById('status-title');
+
+        if(gameState.isPaused) {
+            overlay.style.display = 'flex';
+            pauseMenu.style.display = 'block';
+            document.getElementById('round-intro').style.display = 'none';
+            document.getElementById('summary-area').style.display = 'none';
+            title.innerText = "GAME PAUSED";
+        } else {
+            overlay.style.display = 'none';
+            pauseMenu.style.display = 'none';
+        }
+    }
+
+    function endRound() {
+        clearInterval(gameState.timerInterval);
+        gameState.isActive = false;
+        gameState.isPaused = false;
+        gameState.players.forEach(p => p.totalScore += p.currentRoundScore);
+
+        document.getElementById('overlay').style.display = 'flex';
+        document.getElementById('pause-menu').style.display = 'none';
+        const summary = document.getElementById('summary-area');
+        summary.style.display = 'block';
+        
+        let html = `<h2 style="color:#fffa65">Round ${gameState.currentRound + 1} Results</h2>`;
+        html += `<div style="display:flex; gap:20px; justify-content:center; margin:20px;">`;
+        gameState.players.forEach((p, i) => {
+            html += `<div style="background:#3f4452; padding:20px; border-radius:10px; border-bottom: 5px solid var(--p${i+1})">
+                        <strong>PLAYER ${i+1}</strong><br>Round Score: ${p.currentRoundScore}<br>Total Points: ${p.totalScore}
+                     </div>`;
+        });
+        html += `</div><button class="btn" onclick="nextRound()">GO TO NEXT ROUND</button>`;
+        summary.innerHTML = html;
+        gameState.currentRound++;
+    }
+
+    function nextRound() {
+        showRoundIntro();
+    }
+
+    function showFinalWinner() {
+        const sorted = [...gameState.players]
+            .map((p, i) => ({id: i+1, score: p.totalScore}))
+            .sort((a,b) => b.score - a.score);
+
+        document.getElementById('status-title').innerText = "FINAL RANKING";
+        let html = `<div style="font-size:32px; margin-bottom:30px;">`;
+        sorted.forEach((p, i) => {
+            const medal = i === 0 ? "🥇" : (i === 1 ? "🥈" : "🥉");
+            html += `<p>${medal} Player ${p.id}: ${p.score} Points</p>`;
+        });
+        html += `</div><button class="btn" onclick="location.reload()">PLAY AGAIN</button>`;
+        document.getElementById('summary-area').innerHTML = html;
+    }
+
+    function forceEndRound() {
+        if(gameState.isActive) endRound();
+    }
+</script>
+</body>
+</html>
